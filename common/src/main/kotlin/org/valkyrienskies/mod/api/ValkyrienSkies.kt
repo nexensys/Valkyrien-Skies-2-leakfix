@@ -38,6 +38,8 @@ import org.valkyrienskies.core.api.world.ClientShipWorld
 import org.valkyrienskies.core.api.world.ServerShipWorld
 import org.valkyrienskies.core.api.world.ShipWorld
 import org.valkyrienskies.core.api.world.properties.DimensionId
+import org.valkyrienskies.core.impl.config.VSCoreConfig
+import org.valkyrienskies.mod.common.config.VSGameConfig
 import kotlin.contracts.ExperimentalContracts
 import kotlin.contracts.InvocationKind
 import kotlin.contracts.contract
@@ -60,7 +62,13 @@ val vsApi: VsApi by lazy {
     }
 }
 
-
+fun isConnectivityEnabled(isClient: Boolean): Boolean {
+    return if (isClient) {
+        VSGameConfig.CLIENT.Connectivity.enableClientConnectivity
+    } else {
+        VSCoreConfig.SERVER.sp.enableConnectivity
+    }
+}
 
 /**
  * The String/[DimensionId] used within vs-core for representing this [Level].
@@ -100,6 +108,9 @@ fun Level?.getShipById(id: ShipId): Ship? =
 
 fun Level?.isBlockInShipyard(blockX: Int, blockY: Int, blockZ: Int): Boolean =
     isChunkInShipyard(blockX shr 4, blockZ shr 4)
+
+fun Level?.isBlockInShipyard(pos: BlockPos): Boolean =
+    isBlockInShipyard(pos.x, pos.y, pos.z)
 
 fun Level?.isChunkInShipyard(chunkX: Int, chunkZ: Int): Boolean =
     vsApi.isChunkInShipyard(this, chunkX, chunkZ)

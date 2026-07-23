@@ -78,7 +78,7 @@ public abstract class MixinMinecraft
         final BlockHitResult blockHitResult, final Operation<InteractionResult> useItemOn) {
 
         return useItemOn.call(instance, localPlayer, interactionHand,
-            this.originalCrosshairTarget);
+            (BlockHitResult) this.originalCrosshairTarget);
     }
 
     @NotNull

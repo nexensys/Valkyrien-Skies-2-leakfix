@@ -1,10 +1,8 @@
 package org.valkyrienskies.mod.mixin.client.renderer;
 
 import com.llamalad7.mixinextras.injector.ModifyReturnValue;
-import com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
-import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.blaze3d.vertex.PoseStack;
 import net.minecraft.client.Camera;
 import net.minecraft.client.Minecraft;
@@ -13,12 +11,10 @@ import net.minecraft.client.renderer.GameRenderer;
 import net.minecraft.client.renderer.LevelRenderer;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.level.ClipContext;
+import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
-import org.joml.Matrix3f;
 import org.joml.Matrix4f;
-import org.joml.Quaterniond;
-import org.joml.Quaternionf;
 import org.joml.Vector3d;
 import org.joml.Vector3dc;
 import org.joml.primitives.AABBdc;
@@ -37,9 +33,13 @@ import org.valkyrienskies.mod.common.entity.ShipMountedToData;
 import org.valkyrienskies.mod.common.VSGameUtilsKt;
 import org.valkyrienskies.mod.common.util.EntityDragger;
 import org.valkyrienskies.mod.common.util.EntityDraggingInformation;
+import org.valkyrienskies.mod.common.util.EntityRenderPosition;
 import org.valkyrienskies.mod.common.util.IEntityDraggingInformationProvider;
 import org.valkyrienskies.mod.common.world.RaycastUtilsKt;
 import org.valkyrienskies.mod.mixinducks.client.MinecraftDuck;
+
+import java.util.IdentityHashMap;
+import java.util.Map;
 
 @Mixin(GameRenderer.class)
 public abstract class MixinGameRenderer {
@@ -57,6 +57,9 @@ public abstract class MixinGameRenderer {
 
     @Shadow
     public abstract Matrix4f getProjectionMatrix(double d);
+
+    @Unique
+    private final Map<Entity, EntityRenderPosition.Snapshot> vs$renderPositionSnapshots = new IdentityHashMap<>();
 
     /**
      * {@link Entity#pick(double, float, boolean)} except the hit pos is not transformed
@@ -90,10 +93,18 @@ public abstract class MixinGameRenderer {
     public HitResult modifyCrosshairTargetBlocks(final Entity receiver, final double maxDistance, final float tickDelta,
         final boolean includeFluids, final Operation<HitResult> pick) {
 
-        final HitResult original = entityRaycastNoTransform(receiver, maxDistance, tickDelta, includeFluids);
-        ((MinecraftDuck) this.minecraft).vs$setOriginalCrosshairTarget(original);
-
-        return pick.call(receiver, maxDistance, tickDelta, includeFluids);
+        HitResult result = pick.call(receiver, maxDistance, tickDelta, includeFluids);
+        HitResult noTransform;
+        if(result instanceof BlockHitResult blockHitResult) {
+            noTransform = new BlockHitResult(
+                VSGameUtilsKt.toShipRenderCoordinates(Minecraft.getInstance().level, blockHitResult.getBlockPos().getCenter(), blockHitResult.location),
+                blockHitResult.getDirection(),
+                blockHitResult.getBlockPos(),
+                blockHitResult.isInside()
+            );
+        } else noTransform = result;
+        ((MinecraftDuck) this.minecraft).vs$setOriginalCrosshairTarget(noTransform);
+        return result;
     }
 
     @WrapOperation(
@@ -138,7 +149,13 @@ public abstract class MixinGameRenderer {
                     final Vector3dc passengerPos = shipMountedToData.getMountPosInShip();
                     entityShouldBeHere = shipMountedTo.getRenderTransform().getShipToWorld()
                         .transformPosition(passengerPos, new Vector3d());
-                    entity.setPos(entityShouldBeHere.x(), entityShouldBeHere.y(), entityShouldBeHere.z());
+                    vs$renderPositionSnapshots.computeIfAbsent(entity, EntityRenderPosition::capture);
+                    EntityRenderPosition.setWithoutSectionUpdate(
+                        entity,
+                        entityShouldBeHere.x(),
+                        entityShouldBeHere.y(),
+                        entityShouldBeHere.z()
+                    );
                     entity.xo = entityShouldBeHere.x();
                     entity.yo = entityShouldBeHere.y();
                     entity.zo = entityShouldBeHere.z();
@@ -203,6 +220,9 @@ public abstract class MixinGameRenderer {
     private void postRender(final float tickDelta, final long startTime, final boolean tick, final CallbackInfo ci) {
         final ClientLevel clientWorld = minecraft.level;
         if (clientWorld != null) {
+            vs$renderPositionSnapshots.forEach((entity, snapshot) -> snapshot.restore(entity));
+            vs$renderPositionSnapshots.clear();
+
             // Restore the entity last tick positions that were replaced during this frame
             for (final Entity entity : clientWorld.entitiesForRendering()) {
                 final EntityDraggingInformation vsEntity =
@@ -274,19 +294,6 @@ public abstract class MixinGameRenderer {
             clientShip,
             shipMountedToData.getMountPosInShip()
         );
-
-        // Apply the ship render transform to [matrixStack]
-        final Quaternionf invShipRenderRotation = new Quaternionf(
-            clientShip.getRenderTransform().getShipToWorldRotation().conjugate(new Quaterniond())
-        );
-        matrixStack.mulPose(invShipRenderRotation);
-
-        // We also need to recompute [inverseViewRotationMatrix] after updating [matrixStack]
-        {
-            final Matrix3f matrix3f = new Matrix3f(matrixStack.last().normal());
-            matrix3f.invert();
-            RenderSystem.setInverseViewRotationMatrix(matrix3f);
-        }
 
         // Camera FOV changes based on the position of the camera, so recompute FOV to account for the change of camera
         // position.

@@ -1,9 +1,9 @@
 package org.valkyrienskies.mod.common
 
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation
-import com.mojang.logging.LogUtils
 import net.minecraft.client.Minecraft
 import net.minecraft.client.multiplayer.ClientLevel
+import net.minecraft.world.level.block.Blocks
 import net.minecraft.core.BlockPos
 import net.minecraft.core.Position
 import net.minecraft.core.Vec3i
@@ -17,6 +17,7 @@ import net.minecraft.world.entity.Entity
 import net.minecraft.world.entity.player.Player
 import net.minecraft.world.level.ChunkPos
 import net.minecraft.world.level.Level
+import net.minecraft.world.level.block.state.BlockState
 import net.minecraft.world.level.chunk.LevelChunkSection
 import net.minecraft.world.phys.AABB
 import net.minecraft.world.phys.Vec3
@@ -25,6 +26,7 @@ import org.joml.Vector3dc
 import org.joml.Vector3ic
 import org.joml.primitives.AABBd
 import org.joml.primitives.AABBdc
+import org.joml.primitives.AABBic
 import org.valkyrienskies.core.api.ships.ClientShip
 import org.valkyrienskies.core.api.ships.LoadedServerShip
 import org.valkyrienskies.core.api.ships.LoadedShip
@@ -32,17 +34,18 @@ import org.valkyrienskies.core.api.ships.ServerShip
 import org.valkyrienskies.core.api.ships.Ship
 import org.valkyrienskies.core.api.util.functions.DoubleTernaryConsumer
 import org.valkyrienskies.core.api.world.LevelYRange
+import org.valkyrienskies.core.api.world.connectivity.ConnectionStatus
 import org.valkyrienskies.core.api.world.properties.DimensionId
 import org.valkyrienskies.core.internal.world.VsiPlayer
 import org.valkyrienskies.core.internal.world.VsiServerShipWorld
 import org.valkyrienskies.core.internal.world.VsiShipWorld
 import org.valkyrienskies.core.internal.world.chunks.VsiTerrainUpdate
 import org.valkyrienskies.core.util.expand
+import org.valkyrienskies.mod.common.ValkyrienSkiesMod.ASSEMBLE_BLACKLIST
 import org.valkyrienskies.mod.common.entity.ShipMountedToData
 import org.valkyrienskies.mod.common.entity.ShipMountedToDataProvider
 import org.valkyrienskies.mod.common.util.DimensionIdProvider
-import org.valkyrienskies.mod.common.util.EntityDragger.serversideEyePosition
-import org.valkyrienskies.mod.common.util.IEntityDraggingInformationProvider
+import org.valkyrienskies.mod.common.util.EntityDragger.serversidePosition
 import org.valkyrienskies.mod.common.util.MinecraftPlayer
 import org.valkyrienskies.mod.common.util.set
 import org.valkyrienskies.mod.common.util.toJOML
@@ -96,10 +99,20 @@ fun getResourceKey(dimensionId: DimensionId): ResourceKey<Level> {
 }
 
 fun MinecraftServer.executeIf(condition: () -> Boolean, toExecute: Runnable) {
+    val registeredAtTick = this.tickCount
     vsCore.tickEndEvent.on { ev, handler ->
-        if (ev.world == this.shipObjectWorld && condition()) {
-            toExecute.run()
-            handler.unregister()
+        if (ev.world == this.shipObjectWorld) {
+            if (condition()) {
+                toExecute.run()
+                handler.unregister()
+            } else if (this.tickCount - registeredAtTick > 600) {
+                // Safety timeout: if the condition hasn't been met after 600 ticks (30 seconds),
+                // execute anyway and unregister. This prevents executeIf callbacks from accumulating
+                // forever and potentially blocking server shutdown.
+                org.slf4j.LoggerFactory.getLogger("VS2").info(" executeIf timed out after 600 ticks — forcing execution")
+                toExecute.run()
+                handler.unregister()
+            }
         }
     }
 }
@@ -109,6 +122,23 @@ val Level.yRange get() = LevelYRange(minBuildHeight, maxBuildHeight - 1)
 fun Level.isTickingChunk(pos: ChunkPos) = isTickingChunk(pos.x, pos.z)
 fun Level.isTickingChunk(chunkX: Int, chunkZ: Int) =
     (chunkSource as ServerChunkCache).isPositionTicking(ChunkPos.asLong(chunkX, chunkZ))
+
+/**
+ * Check if a chunk is loaded enough for non-ticking VS2 work.
+ *
+ * This is for flows such as ship assembly and terrain copies that only need direct chunk access.
+ * It is not a substitute for [isTickingChunk] when gameplay needs random, block, or entity ticks.
+ *
+ * Shipyard chunks loaded through [org.valkyrienskies.mod.common.world.VSTicketType.SHIP_CHUNK]
+ * only reach FULL status, so they won't pass [isPositionTicking]. For those chunks we accept a
+ * non-null [ServerChunkCache.getChunkNow].
+ */
+fun Level.isChunkLoadedForVS(pos: ChunkPos): Boolean {
+    if (VS2ChunkAllocator.isChunkInShipyardCompanion(pos.x, pos.z)) {
+        return (chunkSource as ServerChunkCache).getChunkNow(pos.x, pos.z) != null
+    }
+    return isTickingChunk(pos)
+}
 
 fun MinecraftServer.getLevelFromDimensionId(dimensionId: DimensionId): ServerLevel? {
     return getLevel(getResourceKey(dimensionId))
@@ -126,10 +156,10 @@ val Player.playerWrapper get() = (this as PlayerDuck).vs_getPlayer()
  * Like [Entity.squaredDistanceTo] except the destination is transformed into world coordinates if it is a ship
  */
 fun Entity.squaredDistanceToInclShips(x: Double, y: Double, z: Double): Double {
-    val eyePos = if (getShipMountedTo(this) != null) getShipMountedToData(
+    val pos = if (getShipMountedTo(this) != null) getShipMountedToData(
         this, null
-    )!!.mountPosInShip.toMinecraft() else this.serversideEyePosition()
-    return level().squaredDistanceBetweenInclShips(x, y, z, eyePos.x, eyePos.y - 1.0, eyePos.z)
+    )!!.mountPosInShip.toMinecraft() else this.serversidePosition()
+    return level().squaredDistanceBetweenInclShips(x, y, z, pos.x, pos.y, pos.z)
 }
 
 /**
@@ -204,6 +234,20 @@ private fun getShipObjectManagingPosImpl(world: Level?, chunkX: Int, chunkZ: Int
  */
 fun Level.transformFromWorldToNearbyShipsAndWorld(aabb: AABB, cb: Consumer<AABB>) {
     val tmpAABB = AABBd()
+    cb.accept(aabb)
+    getShipsIntersecting(aabb).forEach { ship ->
+        cb.accept(tmpAABB.set(aabb).transform(ship.worldToShip).toMinecraft())
+    }
+}
+
+/**
+ * Same as [transformFromWorldToNearbyShipsAndWorld] but does not call [cb] with the original [aabb].
+ *
+ * Not sure if this is actually useful, but our MixinEntity for water-flowing on ships seems to need it.
+ */
+fun Level.transformFromWorldToNearbyShips(aabb: AABB, cb: Consumer<AABB>) {
+    val tmpAABB = AABBd()
+    //cb.accept(aabb)
     getShipsIntersecting(aabb).forEach { ship ->
         cb.accept(tmpAABB.set(aabb).transform(ship.worldToShip).toMinecraft())
     }
@@ -239,7 +283,7 @@ inline fun Level.transformToNearbyShipsAndWorld(
     }
 
     for (nearbyShip in shipObjectWorld.allShips.getIntersecting(aabb, this!!.dimensionId)) {
-        if (nearbyShip == currentShip) continue
+        if (nearbyShip.id == currentShip?.id) continue
         val posInShip = nearbyShip.worldToShip.transformPosition(posInWorld, temp0)
         cb(posInShip.x(), posInShip.y(), posInShip.z())
     }
@@ -451,10 +495,11 @@ fun Ship.toWorldCoordinates(x: Double, y: Double, z: Double, dest: Vector3d = Ve
 fun LevelChunkSection.toDenseVoxelUpdate(chunkPos: Vector3ic): VsiTerrainUpdate {
     val update = vsCore.newDenseTerrainUpdateBuilder(chunkPos.x(), chunkPos.y(), chunkPos.z())
     val info = BlockStateInfo.cache
+    val airType = vsCore.blockTypes.air
     for (x in 0..15) {
         for (y in 0..15) {
             for (z in 0..15) {
-                update.addBlock(x, y, z, info.get(getBlockState(x, y, z))?.second ?: vsCore.blockTypes.air)
+                update.addBlock(x, y, z, info.get(getBlockState(x, y, z))?.second ?: airType)
             }
         }
     }
@@ -525,6 +570,16 @@ fun getShipMountedTo(entity: Entity): LoadedShip? {
     return getShipMountedToData(entity)?.shipMountedTo
 }
 
+fun Level.isPositionSealed(pos: BlockPos): Boolean {
+    val result = this.shipObjectWorld.isIsolatedAir(pos.x, pos.y, pos.z, this.dimensionId)
+    return result == ConnectionStatus.DISCONNECTED || result == ConnectionStatus.UNKNOWN
+}
+
+fun Level.isPositionMaybeSealed(pos: BlockPos): Boolean {
+    val result = this.shipObjectWorld.isIsolatedAir(pos.x, pos.y, pos.z, this.dimensionId)
+    return result == ConnectionStatus.DISCONNECTED || result == ConnectionStatus.UNKNOWN
+}
+
 /**
  * Applies the ship velocity, inluding angular velocity, to the entity.
  * Useful for cases like launching something on a ship.
@@ -536,4 +591,28 @@ fun Entity?.applyShipVelocity(ship: Ship?) {
         .add(ship.angularVelocity.cross(relPos, Vector3d()))
         .mul(0.05)
     this.push(shipSpeed.x, shipSpeed.y, shipSpeed.z)
+}
+
+/**
+ * Is the [BlockState] in the `assemble_blacklist`
+ * ([ValkyrienSkiesMod.ASSEMBLE_BLACKLIST]) block tag
+ */
+@Suppress("unused")
+fun BlockState?.inAssemblyBlacklist(): Boolean {
+    return this?.`is`(ASSEMBLE_BLACKLIST) ?: false
+}
+
+/**
+ * Calls the consumer [f] for every (integer) position in the AABBic.
+ *
+ * This function is expensive, don't call it too often.
+ */
+fun AABBic.forEach(f: (Int, Int, Int) -> Unit) {
+    for (x in this.minX()..this.maxX()) {
+        for (y in this.minY()..this.maxY()) {
+            for (z in this.minZ()..this.maxZ()) {
+                f.invoke(x, y, z)
+            }
+        }
+    }
 }

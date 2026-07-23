@@ -1,3 +1,5 @@
+import org.jetbrains.kotlin.gradle.tasks.KotlinJvmCompile
+
 buildscript {
     // Lock plugin dependencies
     configurations.classpath {
@@ -69,8 +71,6 @@ subprojects {
     // Apply checkstyle and ktlint to check the code style of every sub project
     apply plugin: "org.jetbrains.kotlin.jvm"
     apply plugin: "io.github.juuxel.loom-vineflower"
-
-    configurations.each { it.resolutionStrategy.useGlobalDependencySubstitutionRules.set(false) }
 
     repositories {
         try {
@@ -144,6 +144,12 @@ subprojects {
             maven {
                 name = "Forge Config Api Port"
                 url = "https://raw.githubusercontent.com/Fuzss/modresources/main/maven/"
+            }
+            maven { // Hexcasting
+                url = "https://maven.blamejared.com"
+            }
+            maven { // Hexal
+                url = uri("https://maven.hexxy.media")
             }
         }
         maven {
@@ -224,6 +230,13 @@ allprojects {
         options.encoding = "UTF-8"
 
         options.release = 17
+    }
+
+    tasks.withType(KotlinJvmCompile).configureEach {
+        kotlinOptions {
+            jvmTarget = "17"
+            freeCompilerArgs += "-Xjvm-default=all"
+        }
     }
 
     java {

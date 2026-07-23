@@ -38,21 +38,26 @@ import org.valkyrienskies.mod.client.VSPhysicsEntityModel
 import org.valkyrienskies.mod.client.VSPhysicsEntityRenderer
 import org.valkyrienskies.mod.common.ValkyrienSkiesMod
 import org.valkyrienskies.mod.common.ValkyrienSkiesMod.AREA_ASSEMBLER_ITEM
+import org.valkyrienskies.mod.common.ValkyrienSkiesMod.CLASSIC_AREA_ASSEMBLER_ITEM
 import org.valkyrienskies.mod.common.ValkyrienSkiesMod.CONNECTION_CHECKER_ITEM
 import org.valkyrienskies.mod.common.ValkyrienSkiesMod.PHYSICS_ENTITY_CREATOR_ITEM
 import org.valkyrienskies.mod.common.ValkyrienSkiesMod.SHIP_ASSEMBLER_ITEM
 import org.valkyrienskies.mod.common.ValkyrienSkiesMod.SHIP_CREATOR_ITEM
 import org.valkyrienskies.mod.common.ValkyrienSkiesMod.SHIP_CREATOR_ITEM_SMALLER
+import org.valkyrienskies.mod.common.ValkyrienSkiesMod.SHIP_REMOVER_ITEM
+import org.valkyrienskies.mod.common.ValkyrienSkiesMod.TEST_ANTIGRAV
 import org.valkyrienskies.mod.common.ValkyrienSkiesMod.TEST_CHAIR
 import org.valkyrienskies.mod.common.ValkyrienSkiesMod.TEST_FLAP
 import org.valkyrienskies.mod.common.ValkyrienSkiesMod.TEST_HINGE
 import org.valkyrienskies.mod.common.ValkyrienSkiesMod.TEST_THRUSTER
 import org.valkyrienskies.mod.common.ValkyrienSkiesMod.TEST_WING
+import org.valkyrienskies.mod.common.block.TestAntigravBlock
 import org.valkyrienskies.mod.common.block.TestChairBlock
 import org.valkyrienskies.mod.common.block.TestFlapBlock
 import org.valkyrienskies.mod.common.block.TestHingeBlock
 import org.valkyrienskies.mod.common.block.TestThrusterBlock
 import org.valkyrienskies.mod.common.block.TestWingBlock
+import org.valkyrienskies.mod.common.blockentity.TestAntigravBlockEntity
 import org.valkyrienskies.mod.common.blockentity.TestHingeBlockEntity
 import org.valkyrienskies.mod.common.blockentity.TestThrusterBlockEntity
 import org.valkyrienskies.mod.common.command.VSCommands
@@ -71,10 +76,14 @@ import org.valkyrienskies.mod.common.item.ConnectionCheckerItem
 import org.valkyrienskies.mod.common.item.PhysicsEntityCreatorItem
 import org.valkyrienskies.mod.common.item.ShipAssemblerItem
 import org.valkyrienskies.mod.common.item.ShipCreatorItem
+import org.valkyrienskies.mod.common.item.ShipRemoverItem
 import org.valkyrienskies.mod.compat.LoadedMods
 import org.valkyrienskies.mod.compat.flywheel.FlywheelCompat
 import org.valkyrienskies.mod.compat.flywheel.ShipEmbeddingManager
+import org.valkyrienskies.mod.compat.hexcasting.HexcastingCompat
 import org.valkyrienskies.mod.fabric.compat.dynmap.FabricDynmapHandler
+import org.valkyrienskies.mod.fabric.compat.hexcasting.FabricShipAmbit
+import org.valkyrienskies.mod.util.ClientConnectivityUpdateQueue
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.Executor
 import java.util.concurrent.atomic.AtomicBoolean
@@ -103,6 +112,7 @@ class ValkyrienSkiesModFabric : ModInitializer {
         ValkyrienSkiesMod.TEST_FLAP = TestFlapBlock
         ValkyrienSkiesMod.TEST_WING = TestWingBlock
         ValkyrienSkiesMod.TEST_THRUSTER = TestThrusterBlock
+        ValkyrienSkiesMod.TEST_ANTIGRAV = TestAntigravBlock
         ValkyrienSkiesMod.CONNECTION_CHECKER_ITEM = ConnectionCheckerItem(
             Properties(),
             { 1.0 },
@@ -113,11 +123,20 @@ class ValkyrienSkiesModFabric : ModInitializer {
             { 1.0 },
             { VSGameConfig.SERVER.minScaling }
         )
+        ValkyrienSkiesMod.SHIP_REMOVER_ITEM = ShipRemoverItem(
+            Properties()
+        )
         ValkyrienSkiesMod.SHIP_ASSEMBLER_ITEM = ShipAssemblerItem(Properties())
         ValkyrienSkiesMod.AREA_ASSEMBLER_ITEM = AreaAssemblerItem(
             Properties(),
             { 1.0 },
             { VSGameConfig.SERVER.minScaling }
+        )
+        ValkyrienSkiesMod.CLASSIC_AREA_ASSEMBLER_ITEM = AreaAssemblerItem(
+            Properties(),
+            { 1.0 },
+            { VSGameConfig.SERVER.minScaling },
+            true
         )
         ValkyrienSkiesMod.SHIP_CREATOR_ITEM_SMALLER = ShipCreatorItem(
             Properties(),
@@ -146,6 +165,9 @@ class ValkyrienSkiesModFabric : ModInitializer {
         ValkyrienSkiesMod.TEST_THRUSTER_BLOCK_ENTITY_TYPE =
             FabricBlockEntityTypeBuilder.create(::TestThrusterBlockEntity, ValkyrienSkiesMod.TEST_THRUSTER).build()
 
+        ValkyrienSkiesMod.TEST_ANTIGRAV_BLOCK_ENTITY_TYPE =
+            FabricBlockEntityTypeBuilder.create(::TestAntigravBlockEntity, ValkyrienSkiesMod.TEST_ANTIGRAV).build()
+
         val isClient = FabricLoader.getInstance().environmentType == EnvType.CLIENT
 
         ValkyrienSkiesMod.init()
@@ -159,6 +181,7 @@ class ValkyrienSkiesModFabric : ModInitializer {
         registerBlockAndItem("test_flap", ValkyrienSkiesMod.TEST_FLAP)
         registerBlockAndItem("test_wing", ValkyrienSkiesMod.TEST_WING)
         registerBlockAndItem("test_thruster", ValkyrienSkiesMod.TEST_THRUSTER)
+        registerBlockAndItem("test_antigrav", ValkyrienSkiesMod.TEST_ANTIGRAV)
         Registry.register(
             BuiltInRegistries.ITEM, ResourceLocation(ValkyrienSkiesMod.MOD_ID, "connection_checker"),
             ValkyrienSkiesMod.CONNECTION_CHECKER_ITEM
@@ -166,6 +189,10 @@ class ValkyrienSkiesModFabric : ModInitializer {
         Registry.register(
             BuiltInRegistries.ITEM, ResourceLocation(ValkyrienSkiesMod.MOD_ID, "area_assembler"),
             ValkyrienSkiesMod.AREA_ASSEMBLER_ITEM
+        )
+        Registry.register(
+            BuiltInRegistries.ITEM, ResourceLocation(ValkyrienSkiesMod.MOD_ID, "classic_area_assembler"),
+            ValkyrienSkiesMod.CLASSIC_AREA_ASSEMBLER_ITEM
         )
         Registry.register(
             BuiltInRegistries.ITEM, ResourceLocation(ValkyrienSkiesMod.MOD_ID, "ship_assembler"),
@@ -178,6 +205,10 @@ class ValkyrienSkiesModFabric : ModInitializer {
         Registry.register(
             BuiltInRegistries.ITEM, ResourceLocation(ValkyrienSkiesMod.MOD_ID, "ship_creator_smaller"),
             ValkyrienSkiesMod.SHIP_CREATOR_ITEM_SMALLER
+        )
+        Registry.register(
+            BuiltInRegistries.ITEM, ResourceLocation(ValkyrienSkiesMod.MOD_ID, "ship_remover"),
+            ValkyrienSkiesMod.SHIP_REMOVER_ITEM
         )
         Registry.register(
             BuiltInRegistries.ITEM, ResourceLocation(ValkyrienSkiesMod.MOD_ID, "physics_entity_creator"),
@@ -203,6 +234,10 @@ class ValkyrienSkiesModFabric : ModInitializer {
             BuiltInRegistries.BLOCK_ENTITY_TYPE, ResourceLocation(ValkyrienSkiesMod.MOD_ID, "test_thruster_block_entity"),
             ValkyrienSkiesMod.TEST_THRUSTER_BLOCK_ENTITY_TYPE
         )
+        Registry.register(
+            BuiltInRegistries.BLOCK_ENTITY_TYPE, ResourceLocation(ValkyrienSkiesMod.MOD_ID, "test_antigrav_block_entity"),
+            ValkyrienSkiesMod.TEST_ANTIGRAV_BLOCK_ENTITY_TYPE
+        )
 
         // Registry.register(
         //     BuiltInRegistries.CREATIVE_MODE_TAB,
@@ -216,11 +251,14 @@ class ValkyrienSkiesModFabric : ModInitializer {
             event.accept(TEST_FLAP.asItem())
             event.accept(TEST_WING.asItem())
             event.accept(TEST_THRUSTER.asItem())
+            event.accept(TEST_ANTIGRAV.asItem())
             event.accept(CONNECTION_CHECKER_ITEM)
             event.accept(SHIP_CREATOR_ITEM)
+            event.accept(SHIP_REMOVER_ITEM)
             event.accept(SHIP_ASSEMBLER_ITEM)
             event.accept(SHIP_CREATOR_ITEM_SMALLER)
             event.accept(AREA_ASSEMBLER_ITEM)
+            event.accept(CLASSIC_AREA_ASSEMBLER_ITEM)
             event.accept(PHYSICS_ENTITY_CREATOR_ITEM)
         }
 
@@ -283,6 +321,9 @@ class ValkyrienSkiesModFabric : ModInitializer {
 
         if (FabricLoader.getInstance().isModLoaded("dynmap"))
             FabricDynmapHandler().register()
+
+        if (FabricLoader.getInstance().isModLoaded("hexcasting"))
+            HexcastingCompat.register(FabricShipAmbit::class.java)
     }
 
     /**
@@ -313,6 +354,10 @@ class ValkyrienSkiesModFabric : ModInitializer {
 
         VSKeyBindings.clientSetup {
             KeyBindingHelper.registerKeyBinding(it)
+        }
+
+        VSGameEvents.registriesCompleted.on {
+            ClientConnectivityUpdateQueue.onRegistriesCompleted()
         }
 
         if (LoadedMods.flywheel == LoadedMods.FlywheelVersion.V1) {

@@ -4,9 +4,7 @@ import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
 import com.llamalad7.mixinextras.sugar.Local;
 import net.minecraft.core.BlockPos;
-import net.minecraft.util.RandomSource;
 import net.minecraft.world.entity.Entity;
-import net.minecraft.world.entity.EntityDimensions;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.MoverType;
 import net.minecraft.world.level.Level;
@@ -17,12 +15,12 @@ import org.joml.Vector3d;
 import org.joml.Vector3dc;
 import org.joml.primitives.AABBd;
 import org.joml.primitives.AABBdc;
-import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
+import org.spongepowered.asm.mixin.injection.Redirect;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 import org.spongepowered.asm.mixin.injection.callback.LocalCapture;
@@ -38,6 +36,9 @@ public abstract class MixinEntity implements IEntityDraggingInformationProvider 
     // region collision
 
     @Shadow
+    public abstract BlockPos blockPosition();
+
+    @Shadow
     public boolean hasImpulse;
     @Shadow
     protected boolean firstTick;
@@ -49,9 +50,6 @@ public abstract class MixinEntity implements IEntityDraggingInformationProvider 
 
     @Shadow
     public abstract boolean is(Entity arg);
-
-    @Shadow
-    public abstract boolean isControlledByLocalInstance();
 
     @Shadow
     public abstract EntityType<?> getType();
@@ -136,7 +134,7 @@ public abstract class MixinEntity implements IEntityDraggingInformationProvider 
 
         // Remove the component of [movementAdjustedForCollisions] that is parallel to [collisionResponseHorizontal]
         if (collisionResponseHorizontal.lengthSquared() > 1e-6) {
-            final Vec3 deltaMovement = getDeltaMovement();
+            final Vec3 deltaMovement = this.getDeltaMovement();
 
             final Vector3dc collisionResponseHorizontalNormal = collisionResponseHorizontal.normalize(new Vector3d());
             final double parallelHorizontalVelocityComponent =
@@ -144,20 +142,24 @@ public abstract class MixinEntity implements IEntityDraggingInformationProvider 
                     .dot(deltaMovement.x, 0.0, deltaMovement.z);
 
             setDeltaMovement(
-                deltaMovement.x
-                    - collisionResponseHorizontalNormal.x() * parallelHorizontalVelocityComponent,
+                deltaMovement.x - collisionResponseHorizontalNormal.x() * parallelHorizontalVelocityComponent,
                 deltaMovement.y,
-                deltaMovement.z
-                    - collisionResponseHorizontalNormal.z() * parallelHorizontalVelocityComponent
+                deltaMovement.z - collisionResponseHorizontalNormal.z() * parallelHorizontalVelocityComponent
             );
         }
-        // The rest of the move function (including tryCheckInsideBlocks) is skipped, so calling it here
-        tryCheckInsideBlocks();
-        // Cancel the original invocation of Entity.setVelocity(DDD)V to remove vanilla behavior
-        callbackInfo.cancel();
     }
-
     // endregion
+
+    // This cancels the actual setDeltaMovement. We can't cancel it in the @Inject, that cancels the entire move function. Somehow this doesn't interfere with the @Inject, crazy.
+    @Redirect(
+        method = "move",
+        at = @At(
+            value = "INVOKE",
+            target = "Lnet/minecraft/world/entity/Entity;setDeltaMovement(DDD)V"
+        )
+    )
+    private void cancelSetDeltaMovement(Entity instance, double d, double e, double f) {}
+
 
     // region Block standing on friction and sprinting particles mixins
     @Unique
@@ -192,6 +194,20 @@ public abstract class MixinEntity implements IEntityDraggingInformationProvider 
         return null;
     }
 
+    @Inject(method = "getBlockPosBelowThatAffectsMyMovement", at = @At("HEAD"), cancellable = true)
+    private void preGetBlockPosBelowThatAffectsMyMovement(final CallbackInfoReturnable<BlockPos> cir) {
+        final Vector3dc blockPosInGlobal = new Vector3d(
+            position.x,
+            getBoundingBox().minY - 0.5,
+            position.z
+        );
+        final BlockPos blockPosStandingOnFromShip = getPosStandingOnFromShips(blockPosInGlobal);
+        if (blockPosStandingOnFromShip != null) {
+            cir.setReturnValue(blockPosStandingOnFromShip);
+        }
+    }
+
+
     /**
      * @author tri0de
      * @reason Allows ship blocks to spawn landing particles, running particles, and play step sounds
@@ -200,7 +216,7 @@ public abstract class MixinEntity implements IEntityDraggingInformationProvider 
     private void preGetOnPos(final CallbackInfoReturnable<BlockPos> cir) {
         final Vector3dc blockPosInGlobal = new Vector3d(
             position.x,
-            position.y,
+            position.y - 0.2,
             position.z
         );
         final BlockPos blockPosStandingOnFromShip = getPosStandingOnFromShips(blockPosInGlobal);
@@ -239,9 +255,9 @@ public abstract class MixinEntity implements IEntityDraggingInformationProvider 
         if (level != null && level.isClientSide && tickCount > 1) { //baseTick sets the firstTick false, use tickCount instead.
             final Ship ship = VSGameUtilsKt.getLoadedShipManagingPos(level, getOnPos());
             if (ship != null) {
-                if (entityDraggingInformation.getLastShipStoodOnServerWriteOnly() == null) {
-                    return;
-                }
+//                if (entityDraggingInformation.getLastShipStoodOnServerWriteOnly() == null) {
+//                    return;
+//                }
                 entityDraggingInformation.setLastShipStoodOn(ship.getId());
                 getIndirectPassengers().forEach(entity -> {
                     final EntityDraggingInformation passengerDraggingInformation =
@@ -253,9 +269,9 @@ public abstract class MixinEntity implements IEntityDraggingInformationProvider 
                     if (entityDraggingInformation.getIgnoreNextGroundStand()) {
                         entityDraggingInformation.setIgnoreNextGroundStand(false);
                     } else {
-                        if (entityDraggingInformation.getLastShipStoodOnServerWriteOnly() != null) {
-                            return;
-                        }
+//                        if (entityDraggingInformation.getLastShipStoodOnServerWriteOnly() != null) {
+//                            return;
+//                        }
                         entityDraggingInformation.setLastShipStoodOn(null);
                         getIndirectPassengers().forEach(entity -> {
                             final EntityDraggingInformation passengerDraggingInformation =
@@ -282,12 +298,6 @@ public abstract class MixinEntity implements IEntityDraggingInformationProvider 
     public abstract void setDeltaMovement(double x, double y, double z);
 
     @Shadow
-    protected abstract void tryCheckInsideBlocks();
-
-    @Shadow
-    protected abstract Vec3 collide(Vec3 vec3d);
-
-    @Shadow
     public abstract Vec3 getDeltaMovement();
 
     @Shadow
@@ -301,12 +311,5 @@ public abstract class MixinEntity implements IEntityDraggingInformationProvider 
 
     @Shadow
     private Vec3 position;
-
-    @Shadow
-    @Final
-    protected RandomSource random;
-
-    @Shadow
-    private EntityDimensions dimensions;
     // endregion
 }

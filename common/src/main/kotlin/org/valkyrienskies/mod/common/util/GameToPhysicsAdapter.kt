@@ -25,16 +25,22 @@ class GameToPhysicsAdapter {
     private val worldToModelForces = ConcurrentLinkedQueue<Pair<ShipId, ForceAtPos>>()
     private val worldToBodyForces = ConcurrentLinkedQueue<Pair<ShipId, ForceAtPos>>()
 
-    private val joints = ConcurrentHashMap<Pair<VSJoint, Consumer<VSJointId>>, Int>()
+    private val addedJoints = ConcurrentHashMap<Pair<VSJoint, Consumer<VSJointId>>, Int>()
     private val updatedJoints = ConcurrentLinkedQueue<VSJointAndId>()
     private val deletedJoints = ConcurrentLinkedQueue<VSJointId>()
+
+    private val shipToJointIds = ConcurrentHashMap<Long, Set<Int>>()
+    private val jointById = ConcurrentHashMap<Int, VSJoint>()
 
     private val toBeStatic = ConcurrentLinkedQueue<Pair<ShipId, Boolean>>()
 
     private val enablePairs = ConcurrentLinkedQueue<Pair<ShipId, ShipId>>()
     private val disablePairs = ConcurrentLinkedQueue<Pair<ShipId, ShipId>>()
 
+    private val shipToLiquidOverlap = ConcurrentHashMap<Long, Double>()
+
     fun physTick(physLevel: PhysLevel, delta: Double) {
+
         worldForces.pollUntilEmpty { pair ->
             val ship = physLevel.getShipById(pair.first)
             if (pair.second.pos != null) {
@@ -100,15 +106,21 @@ class GameToPhysicsAdapter {
             }
         }
 
-        val safeJoints = HashMap(joints)
+        // We have to have this weird queue so that we can add all our joints,
+        // then update our jointById maps, then call the callbacks.
+        // Otherwise, people trying to get their joint by id _in_ the callback will get null.
+        val callbackQueue = ArrayList<Pair<Consumer<VSJointId>, VSJointId>>()
+
+        val safeJoints = HashMap(addedJoints)
         safeJoints.forEach { newJoint, timer ->
             if (timer > 0) {
-                joints[newJoint] = timer - 1
+                addedJoints[newJoint] = timer - 1
             } else {
-                newJoint.second.accept((physLevel as VsiPhysLevel).addJoint(newJoint.first))
-                joints.remove(newJoint)
+                callbackQueue.add(Pair(newJoint.second, (physLevel as VsiPhysLevel).addJoint(newJoint.first)))
+                addedJoints.remove(newJoint)
             }
         }
+
         updatedJoints.pollUntilEmpty { jointAndId ->
             (physLevel as VsiPhysLevel).updateJoint(jointAndId.jointId, jointAndId.joint)
         }
@@ -116,10 +128,25 @@ class GameToPhysicsAdapter {
             (physLevel as VsiPhysLevel).removeJoint(jointId)
         }
 
+        // Update our joint maps - strategically placed between adding the joints, and calling the callbacks
+        shipToJointIds.clear()
+        jointById.clear()
+
+        shipToJointIds.putAll((physLevel as VsiPhysLevel).getJointsByShipIds())
+        jointById.putAll((physLevel as VsiPhysLevel).getAllJoints())
+
+        // and finally... call the callbacks
+        callbackQueue.forEach { (consumer, i) -> consumer.accept(i) }
+
         toBeStatic.pollUntilEmpty { pair -> physLevel.getShipById(pair.first)?.isStatic = pair.second }
 
         enablePairs.pollUntilEmpty { pair -> physLevel.enableCollisionBetween(pair.first, pair.second) }
         disablePairs.pollUntilEmpty { pair -> physLevel.disableCollisionBetween(pair.first, pair.second) }
+
+        shipToLiquidOverlap.clear()
+        physLevel.getAllPhysShips().forEach { ship ->
+            shipToLiquidOverlap[ship.id] = ship.liquidOverlap
+        }
     }
 
     /**
@@ -240,7 +267,7 @@ class GameToPhysicsAdapter {
     }
 
     fun addJoint(joint: VSJoint, delay: Int = 0, function: Consumer<VSJointId>) {
-        joints.put(joint to function, delay)
+        addedJoints.put(joint to function, delay)
     }
     fun updateJoint(jointAndId: VSJointAndId) {
         updatedJoints.add(jointAndId)
@@ -249,12 +276,99 @@ class GameToPhysicsAdapter {
         deletedJoints.add(jointId)
     }
 
+    /**
+     * Returns a joint by its ID.
+     *
+     * @param jointId The ID of the joint to retrieve.
+     * @return The joint with the specified ID, or null if it does not exist.
+     */
+    fun getJointById(jointId: VSJointId): VSJoint? {
+        return jointById[jointId]
+    }
+
+    /**
+     * Returns a set containing the IDs of all joints currently attached to the ship with the specified ID.
+     *
+     * All returned Ids should be valid on the frame requested, but it is not advised to store this result, as it may change.
+     *
+     * @see [getJointById]
+     */
+    fun getJointsFromShip(shipId: ShipId): Set<VSJointId>? {
+        return shipToJointIds[shipId]
+    }
+
+    /**
+     * Retuns a map of all joints and their IDs in this PhysLevel.
+     *
+     * @see [getJointById]
+     */
+    fun getAllJoints(): Map<VSJointId, VSJoint> {
+        return jointById.toMap()
+    }
+
+    /**
+     * Returns a map of ShipIds to the IDs of any joints attached to them.
+     *
+     * @see [getJointsFromShip]
+     */
+    fun getJointsByShipIds(): Map<ShipId, Set<VSJointId>> {
+        return shipToJointIds.toMap()
+    }
+
     fun enableCollisionBetween(shipA: ShipId, shipB: ShipId) {
         enablePairs.add(shipA to shipB)
     }
 
     fun disableCollisionBetween(shipA: ShipId, shipB: ShipId) {
         disablePairs.add(shipA to shipB)
+    }
+
+    /**
+     * Gets all of the ships connected to [start] with joints.
+     *
+     * Note: This function is mildly expensive. Try to avoid using it too often,
+     * perhaps cache the return value for a few ticks.
+     *
+     * @param start the "root" [ShipId] to start from
+     * @return A list of all connected ships (as [ShipId]s)
+     */
+    fun getAllConnectedShips(start: ShipId): List<ShipId> {
+        val visited = mutableSetOf<ShipId>()
+        val queue = ArrayDeque<ShipId>()
+
+        queue.add(start)
+        visited.add(start)
+
+        while (queue.isNotEmpty()) {
+            val currentShip = queue.removeFirst()
+
+            val jointIds = getJointsFromShip(currentShip) ?: continue
+
+            for (jointId in jointIds) {
+                val joint = getJointById(jointId) ?: continue
+
+                // Get the other ship attached to the joint
+                val otherShip = when (currentShip) {
+                    joint.shipId0 -> joint.shipId1
+                    joint.shipId1 -> joint.shipId0
+                    else -> null
+                }
+
+                if (otherShip != null && visited.add(otherShip)) {
+                    queue.add(otherShip)
+                }
+            }
+        }
+
+        return visited.toList()
+    }
+
+    /**
+     * Gets the percent of the ship that is overlapping a fluid, from 0 to 1.
+     * Should not be null unless the `id` is not a valid ship
+     */
+    fun getLiquidOverlap(id: Long): Double? {
+        return shipToLiquidOverlap[id]
     }
 
     private data class ForceAtPos(val force: Vector3dc, val pos: Vector3dc?)

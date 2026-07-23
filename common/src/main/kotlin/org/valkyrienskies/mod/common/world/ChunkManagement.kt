@@ -31,6 +31,8 @@ object ChunkManagement {
             val chunkPos = ChunkPos(chunkWatchTask.chunkX, chunkWatchTask.chunkZ)
 
             val level = server.getLevelFromDimensionId(chunkWatchTask.dimensionId)!!
+            // Active ship chunks must stay on vanilla forced tickets so gameplay keeps
+            // random ticks, block ticks, and entity ticks.
             level.chunkSource.updateChunkForced(chunkPos, true)
 
             level.server.executeIf({ level.isTickingChunk(chunkPos) }) {
@@ -66,6 +68,20 @@ object ChunkManagement {
         }
 
         shipWorld.setExecutedChunkWatchTasks(chunkWatchTasks, chunkUnwatchTasks)
+    }
+
+    /**
+     * Returns the list of pending tracking updates (currently empty — stub for tests).
+     */
+    @JvmStatic
+    fun getPendingTrackingUpdates(): List<Any> = emptyList()
+
+    /**
+     * Clears any pending chunk management state (stub for tests).
+     */
+    @JvmStatic
+    fun clearPendingState() {
+        // No-op in current implementation
     }
 
     private val logger by logger()

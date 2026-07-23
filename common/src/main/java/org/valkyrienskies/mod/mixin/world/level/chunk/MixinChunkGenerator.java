@@ -6,9 +6,7 @@ import net.minecraft.core.Holder;
 import net.minecraft.core.HolderSet;
 import net.minecraft.core.RegistryAccess;
 import net.minecraft.server.level.ServerLevel;
-import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.StructureManager;
-import net.minecraft.world.level.WorldGenLevel;
 import net.minecraft.world.level.chunk.ChunkAccess;
 import net.minecraft.world.level.chunk.ChunkGenerator;
 import net.minecraft.world.level.chunk.ChunkGeneratorStructureState;
@@ -32,40 +30,17 @@ public class MixinChunkGenerator {
         }
     }
 
-    @Inject(method = "applyBiomeDecoration", at = @At("HEAD"), cancellable = true)
-    private void preApplyBiomeDecoration(WorldGenLevel worldGenLevel, ChunkAccess chunkAccess, StructureManager structureManager, CallbackInfo callbackInfo) {
-        final ChunkPos chunkPos = chunkAccess.getPos();
-        if (VS2ChunkAllocator.INSTANCE.isChunkInShipyardCompanion(chunkPos.x, chunkPos.z)) {
-            callbackInfo.cancel();
-        }
-    }
-
-    //TODO
-    /*
-    @Inject(method = "hasStructureChunkInRange", at = @At("HEAD"), cancellable = true)
-    private void preHasFeatureChunkInRange(Holder<StructureSet> holder, RandomState randomState, long l, int chunkX, int chunkZ, int k, CallbackInfoReturnable<Boolean> cir) {
-        if (VS2ChunkAllocator.INSTANCE.isChunkInShipyardCompanion(chunkX, chunkZ)) {
-            cir.setReturnValue(false);
-        }
-    }
-
-     */
-
     @Inject(method = "createStructures", at = @At("HEAD"), cancellable = true)
-    private void preCreateStructures(RegistryAccess registryAccess,
-        ChunkGeneratorStructureState chunkGeneratorStructureState, StructureManager structureManager,
-        ChunkAccess chunkAccess, StructureTemplateManager structureTemplateManager, CallbackInfo callbackInfo) {
-        final ChunkPos chunkPos = chunkAccess.getPos();
-        if (VS2ChunkAllocator.INSTANCE.isChunkInShipyardCompanion(chunkPos.x, chunkPos.z)) {
-            callbackInfo.cancel();
-        }
-    }
-
-    @Inject(method = "createReferences", at = @At("HEAD"), cancellable = true)
-    private void preCreateReferences(WorldGenLevel worldGenLevel, StructureManager structureManager, ChunkAccess chunkAccess, CallbackInfo callbackInfo) {
-        final ChunkPos chunkPos = chunkAccess.getPos();
-        if (VS2ChunkAllocator.INSTANCE.isChunkInShipyardCompanion(chunkPos.x, chunkPos.z)) {
-            callbackInfo.cancel();
+    private void vs$skipCreateStructuresInShipyard(
+        RegistryAccess registryAccess,
+        ChunkGeneratorStructureState chunkGeneratorStructureState,
+        StructureManager structureManager,
+        ChunkAccess chunkAccess,
+        StructureTemplateManager structureTemplateManager,
+        CallbackInfo ci
+    ) {
+        if (VS2ChunkAllocator.INSTANCE.isChunkInShipyardCompanion(chunkAccess.getPos().x, chunkAccess.getPos().z)) {
+            ci.cancel();
         }
     }
 }

@@ -8,11 +8,13 @@ import net.minecraft.world.InteractionResult
 import net.minecraft.world.item.Item
 import net.minecraft.world.item.ItemStack
 import net.minecraft.world.item.context.UseOnContext
-import net.minecraft.world.level.block.Blocks
 import net.minecraft.world.level.block.state.BlockState
-import net.minecraft.world.level.levelgen.structure.templatesystem.StructureTemplate
 import org.joml.primitives.AABBi
-import org.valkyrienskies.mod.common.assembly.createNewShipWithStructure
+import org.valkyrienskies.core.util.datastructures.DenseBlockPosSet
+import org.valkyrienskies.mod.api.toJOMLd
+import org.valkyrienskies.mod.api.toMinecraft
+import org.valkyrienskies.mod.common.assembly.ShipAssembler
+import org.valkyrienskies.mod.common.assembly.createNewShipWithBlocks
 import org.valkyrienskies.mod.common.dimensionId
 import org.valkyrienskies.mod.common.getLoadedShipManagingPos
 import org.valkyrienskies.mod.common.shipObjectWorld
@@ -20,7 +22,7 @@ import org.valkyrienskies.mod.common.util.toJOML
 import java.util.function.DoubleSupplier
 
 class AreaAssemblerItem(
-    properties: Properties, private val scale: DoubleSupplier, private val minScaling: DoubleSupplier
+    properties: Properties, private val scale: DoubleSupplier, private val minScaling: DoubleSupplier, private val classicAssembler: Boolean = false
 ) : Item(properties) {
 
     override fun isFoil(stack: ItemStack): Boolean {
@@ -56,12 +58,18 @@ class AreaAssemblerItem(
                         val lowerCorner = BlockPos(blockAABB.minX, blockAABB.minY, blockAABB.minZ)
                         val upperCorner = BlockPos(blockAABB.maxX, blockAABB.maxY, blockAABB.maxZ)
 
-                        val structure = StructureTemplate()
-                        structure.fillFromWorld(level, lowerCorner, upperCorner.offset(1, 1, 1).subtract(lowerCorner), true, Blocks.STRUCTURE_VOID)
+                        val ship = if (classicAssembler) {
+                            val denseSet = DenseBlockPosSet()
+                            BlockPos.betweenClosed(lowerCorner, upperCorner).forEach{ denseSet.add(it.toJOML()) }
+                            val center = lowerCorner.toJOMLd().add(upperCorner.toJOMLd()).div(2.0)
+                            createNewShipWithBlocks(BlockPos.containing(center.toMinecraft()), denseSet, level)
+                        }
+                        else {
+                            ShipAssembler.assembleToShip(level, BlockPos.betweenClosed(lowerCorner, upperCorner).map{ it.mutable() }.toSet(), 1.0)
+                        }
 
-                        ctx.player?.sendSystemMessage(Component.literal("Assembling (${blockPos.x}, ${blockPos.y}, ${blockPos.z}) to ($firstPosX, $firstPosY, $firstPosZ)!"))
-                        //ShipAssembler.assembleToShip(level, blocks, true, scale.asDouble, true)
-                        createNewShipWithStructure(lowerCorner, upperCorner, structure, level)
+                        ctx.player?.sendSystemMessage(Component.translatable("command.valkyrienskies.shipify.success_one", ship.slug))
+
                     }
                     item.tag!!.remove("firstPosX")
                     item.tag!!.remove("firstPosY")

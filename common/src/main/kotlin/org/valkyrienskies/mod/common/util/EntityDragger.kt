@@ -25,7 +25,6 @@ import kotlin.math.asin
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.sin
-import kotlin.math.sqrt
 
 object EntityDragger {
     // How much we decay the addedMovement each tick after player hasn't collided with a ship for at least 10 ticks.
@@ -37,7 +36,7 @@ object EntityDragger {
      */
     fun dragEntitiesWithShips(entities: Iterable<Entity>, preTick: Boolean = false) {
         for (entity in entities) {
-            val entityDraggingInformation = (entity as IEntityDraggingInformationProvider).draggingInformation
+            val entityDraggingInformation = (entity as? IEntityDraggingInformationProvider)?.draggingInformation ?: continue
 
             var dragTheEntity = false
             var addedMovement: Vector3dc? = null
@@ -175,12 +174,25 @@ object EntityDragger {
     }
 
     /**
+     * Checks if the entity is a ServerPlayer and has a [serverRelativePlayerPosition] set. If it does, returns that, which is in ship space; otherwise, returns worldspace entity position.
+     */
+    fun Entity.serversidePosition(): Vec3 {
+        if (this is IEntityDraggingInformationProvider && this.draggingInformation.isEntityBeingDraggedByAShip()) {
+            if (this.draggingInformation.bestRelativeEntityPosition() != null) {
+                return this.draggingInformation.bestRelativeEntityPosition()!!.toMinecraft()
+            }
+        }
+        return this.position()
+    }
+
+    /**
      * Checks if the entity is a ServerPlayer and has a [serverRelativePlayerPosition] set. If it does, returns that, which is in ship space; otherwise, returns worldspace eye position.
      */
     fun Entity.serversideEyePosition(): Vec3 {
-        if (this is ServerPlayer && this is IEntityDraggingInformationProvider && this.draggingInformation.isEntityBeingDraggedByAShip()) {
-            if (this.draggingInformation.serverRelativePlayerPosition != null) {
-                return this.draggingInformation.serverRelativePlayerPosition!!.toMinecraft()
+        if (this is IEntityDraggingInformationProvider && this.draggingInformation.isEntityBeingDraggedByAShip()) {
+            if (this.draggingInformation.bestRelativeEntityPosition() != null) {
+                return this.draggingInformation.bestRelativeEntityPosition()!!.add(0.0, this.getEyeHeight(pose).toDouble(), 0.0,
+                    Vector3d())!!.toMinecraft()
             }
         }
         return this.eyePosition
@@ -298,8 +310,7 @@ object EntityDragger {
             }
         }
 
-        val motionLength = sqrt(d * d + e * e + f * f)
-        return ship.shipToWorld.transformDirection(Vector3d(d, e, f)).normalize().mul(motionLength).toMinecraft()
+        return ship.shipToWorld.transformDirection(Vector3d(d, e, f)).toMinecraft()
     }
 
     private fun isValidWalkablePosition(
